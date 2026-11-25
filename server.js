@@ -2365,14 +2365,18 @@ function summarizeDeckRatings(voterKey) {
 
       const allCards = cardsRes.data?.items || [];
       const evoCards = allCards
-        .filter((c) => (c.maxEvolutionLevel || 0) > 0)
+        .filter((c) => ((c.maxEvolutionLevel || 0) & 1) !== 0)
         .slice(-8)
         .reverse();
+      const totalEvolutions = allCards.filter(
+        (c) => ((c.maxEvolutionLevel || 0) & 1) !== 0
+      ).length;
       const championCards = allCards.filter((c) => c.rarity === 'champion');
 
       const payload = {
         globalTournaments: tournamentsRes.data?.items || [],
         latestEvolutions: evoCards,
+        totalEvolutions: totalEvolutions || 45,
         champions: championCards,
         totalOfficialCards: allCards.length || 123,
       };
