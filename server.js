@@ -2181,9 +2181,156 @@ function summarizeDeckRatings(voterKey) {
         ],
       },
     ];
-    const items = readStore('remote_news', NEWS_FILE, defaultNews);
+    const adminOrStored = readStore('remote_news', NEWS_FILE, defaultNews);
+    let liveApiItems = [];
+    try {
+      const nowMs = Date.now();
+      if (!global.__cachedLiveNews || nowMs - (global.__cachedLiveNewsAt || 0) > 15 * 60 * 1000) {
+        const built = [];
+
+        // 1) Oyunun resmi "News Royale" (supercell.com/en/games/clashroyale/blog/) haberlerini çek
+        try {
+          const blogHtml = await new Promise((resolve) => {
+            const reqBlog = https.get(
+              'https://supercell.com/en/games/clashroyale/blog/',
+              {
+                headers: {
+                  'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                  Accept: 'text/html',
+                },
+              },
+              (r) => {
+                let raw = '';
+                r.on('data', (c) => (raw += c));
+                r.on('end', () => resolve(r.statusCode === 200 ? raw : ''));
+              }
+            );
+            reqBlog.on('error', () => resolve(''));
+            reqBlog.setTimeout(10000, () => {
+              reqBlog.destroy();
+              resolve('');
+            });
+          });
+          const nextMatch = blogHtml.match(
+            /<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/
+          );
+          if (nextMatch && nextMatch[1]) {
+            const nextJson = JSON.parse(nextMatch[1]);
+            const articles = nextJson?.props?.pageProps?.articles || [];
+            articles.forEach((art, idx) => {
+              const title = String(art.title || '').trim();
+              if (!title) return;
+              const slug = String(art.linkUrl || `art-${idx}`);
+              const isRelease = slug.includes('release-notes');
+              const isEsports = slug.includes('esports');
+              built.push({
+                id: `official-${slug.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+                tag: isRelease
+                  ? '🚀 YAMA & SEZON NOTLARI'
+                  : isEsports
+                  ? '🏆 ESPOR & TURNUVA'
+                  : '📰 RESMİ OYUN HABERİ',
+                tagEn: isRelease
+                  ? '🚀 RELEASE NOTES'
+                  : isEsports
+                  ? '🏆 ESPORTS'
+                  : '📰 OFFICIAL NEWS',
+                tagColor: isRelease ? '#FFB800' : isEsports ? '#D946EF' : '#38BDF8',
+                publishedAt: art.publishDate || new Date().toISOString(),
+                imageUrl: art.thumbnail?.imgUrl || null,
+                articleUrl: art.linkUrl
+                  ? `https://supercell.com${art.linkUrl}`
+                  : 'https://supercell.com/en/games/clashroyale/blog/',
+                title,
+                titleEn: title,
+                summary:
+                  art.descriptionForNewsArchive ||
+                  'Clash Royale resmi News Royale duyurusu.',
+                summaryEn:
+                  art.descriptionForNewsArchive ||
+                  'Official Clash Royale News Royale announcement.',
+                highlights: [],
+                highlightsEn: [],
+              });
+            });
+          }
+        } catch (blogErr) {}
+
+        // 2) Resmi Supercell Developer API (/globaltournaments, /challenges)
+        const [gtRes, chRes] = await Promise.all([
+          fetchFromSupercell('/globaltournaments', customKey).catch(() => ({ status: 0, data: null })),
+          fetchFromSupercell('/challenges', customKey).catch(() => ({ status: 0, data: null })),
+        ]);
+
+        const tournaments = gtRes?.data?.items || [];
+        if (tournaments.length > 0) {
+          const gt = tournaments[0];
+          built.push({
+            id: `live-gt-${gt.tag || 'current'}`,
+            tag: '🏆 CANLI KÜRESEL TURNUVA',
+            tagEn: '🏆 LIVE GLOBAL TOURNAMENT',
+            tagColor: '#FFB800',
+            publishedAt: new Date().toISOString(),
+            title: gt.title || 'Küresel Turnuva Aktif!',
+            titleEn: gt.title || 'Global Tournament Active!',
+            summary: `Resmi Clash Royale API üzerinden canlı alındı. Maksimum kayıp hakkı: ${gt.maxLosses || 5}, seviye sınırı: ${gt.minExpLevel || 1}.`,
+            summaryEn: `Fetched live from the official Clash Royale API. Max losses: ${gt.maxLosses || 5}, min king level: ${gt.minExpLevel || 1}.`,
+            highlights: [`🎮 Oyun Modu: ${gt.gameMode?.name || 'Turnuva Modu'}`],
+            highlightsEn: [`🎮 Game Mode: ${gt.gameMode?.name || 'Tournament Mode'}`],
+          });
+        }
+
+        const challengeGroups = chRes?.data || [];
+        if (Array.isArray(challengeGroups) && challengeGroups.length > 0) {
+          const firstGroup = challengeGroups[0];
+          const ch = firstGroup?.challenges?.[0];
+          if (ch) {
+            built.push({
+              id: `live-ch-${ch.id || 'current'}`,
+              tag: '⚔️ CANLI MÜCADELE & ETKİNLİK',
+              tagEn: '⚔️ LIVE CHALLENGE & EVENT',
+              tagColor: '#D946EF',
+              publishedAt: new Date().toISOString(),
+              title: ch.name || 'Özel Mücadele Etkinliği',
+              titleEn: ch.name || 'Special Challenge Event',
+              summary: ch.description || 'Resmi Clash Royale API üzerinden alınan güncel oyun içi mücadele etkinliği.',
+              summaryEn: ch.description || 'Current in-game challenge fetched live from the official Clash Royale API.',
+              highlights: [`🏅 Hedef Galibiyet: ${ch.maxWins || '-'} • Maksimum Kayıp: ${ch.maxLosses || '-'}`],
+              highlightsEn: [`🏅 Max Wins: ${ch.maxWins || '-'} • Max Losses: ${ch.maxLosses || '-'}`],
+            });
+          }
+        }
+
+        if (built.length > 0) {
+          // Eski haberleri silmeden biriktir ve NEWS_FILE içine kalıcı yaz
+          const seenIds = new Set();
+          const combinedArchive = [];
+          for (const item of [...built, ...adminOrStored]) {
+            if (!item || !item.id || seenIds.has(item.id)) continue;
+            seenIds.add(item.id);
+            combinedArchive.push(item);
+          }
+          writeStore('remote_news', NEWS_FILE, combinedArchive.slice(0, 80));
+          global.__cachedLiveNews = built;
+          global.__cachedLiveNewsAt = nowMs;
+        }
+      }
+      liveApiItems = global.__cachedLiveNews || [];
+    } catch (liveErr) {
+      liveApiItems = [];
+    }
+
+    const latestArchive = readStore('remote_news', NEWS_FILE, adminOrStored);
+    const seenFinal = new Set();
+    const items = [];
+    for (const item of [...liveApiItems, ...latestArchive]) {
+      if (!item || !item.id || seenFinal.has(item.id)) continue;
+      seenFinal.add(item.id);
+      items.push(item);
+    }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    return res.end(JSON.stringify({ ok: true, items, updatedAt: new Date().toISOString() }));
+    return res.end(JSON.stringify({ ok: true, items, liveCount: liveApiItems.length, updatedAt: new Date().toISOString() }));
   }
 
   // 2) CANLI KÜRESEL TURNUVA, YENİ EVRİMLER & GÜNCELLEME VERİLERİ (/api/events)
