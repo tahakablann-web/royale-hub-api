@@ -107,11 +107,9 @@ const DEFAULT_NEWS_ITEMS = [
 function isUserAdmin(userObj) {
   if (!userObj) return false;
   const email = String(userObj.email || '').trim().toLowerCase();
-  const tag = String(userObj.tag || '').trim().toUpperCase();
   return Boolean(
     userObj.isAdmin ||
-      (email && ADMIN_EMAILS.includes(email)) ||
-      (tag && ADMIN_TAGS.includes(tag))
+      (email && ADMIN_EMAILS.includes(email))
   );
 }
 
@@ -177,9 +175,10 @@ const CR_API_HOST =
   process.env.CR_API_HOST ||
   (USE_PROXY ? 'proxy.royaleapi.dev' : 'api.clashroyale.com');
 
-const SUPERCELL_API_KEY =
+const SUPERCELL_API_KEY = (
   process.env.CR_API_KEY ||
-  'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiIsImtpZCI6IjI4YTMxOGY3LTAwMDAtYTFlYi03ZmExLTJjNzQzM2M2Y2NhNSJ9.eyJpc3MiOiJzdXBlcmNlbGwiLCJhdWQiOiJzdXBlcmNlbGw6Z2FtZWFwaSIsImp0aSI6IjVhMGM3MTRhLTdmZmUtNDhjYy1iODcxLTMwMWZiNjdmZjU0OSIsImlhdCI6MTc5NDk0MzI2Mywic3ViIjoiZGV2ZWxvcGVyLzdhZTkxODk5LWM3NDItNDRmOC04YWU4LTQ1NTdlMTM3ZjYxZSIsInNjb3BlcyI6WyJyb3lhbGUiXSwibGltaXRzIjpbeyJ0aWVyIjoiZGV2ZWxvcGVyL3NpbHZlciIsInR5cGUiOiJ0aHJvdHRsaW5nIn0seyJjaWRycyI6WyI3OC4xNzIuMjUxLjE0NCJdLCJ0eXBlIjoiY2xpZW50In1dfQ.p0GazxPRKbMADYeP13g91ejfklQUBkPaDCW371cHM5g36t_oX4wRmQepdPRRnuVdLp4eCFPKXs9GdpC5WJdeFw';
+  'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiIsImtpZCI6IjI4YTMxOGY3LTAwMDAtYTFlYi03ZmExLTJjNzQzM2M2Y2NhNSJ9.eyJpc3MiOiJzdXBlcmNlbGwiLCJhdWQiOiJzdXBlcmNlbGw6Z2FtZWFwaSIsImp0aSI6IjVhMGM3MTRhLTdmZmUtNDhjYy1iODcxLTMwMWZiNjdmZjU0OSIsImlhdCI6MTc5NDk0MzI2Mywic3ViIjoiZGV2ZWxvcGVyLzdhZTkxODk5LWM3NDItNDRmOC04YWU4LTQ1NTdlMTM3ZjYxZSIsInNjb3BlcyI6WyJyb3lhbGUiXSwibGltaXRzIjpbeyJ0aWVyIjoiZGV2ZWxvcGVyL3NpbHZlciIsInR5cGUiOiJ0aHJvdHRsaW5nIn0seyJjaWRycyI6WyI3OC4xNzIuMjUxLjE0NCJdLCJ0eXBlIjoiY2xpZW50In1dfQ.p0GazxPRKbMADYeP13g91ejfklQUBkPaDCW371cHM5g36t_oX4wRmQepdPRRnuVdLp4eCFPKXs9GdpC5WJdeFw'
+).trim();
 
 let cachedCards = null;
 let cachedLeaderboardGlobal = null;
@@ -843,6 +842,10 @@ const server = http.createServer(async (req, res) => {
 
   // 3) ŞİFRE SIFIRLAMA / KURTARMA (/api/auth/forgot-password)
   if (url.pathname === '/api/auth/forgot-password' && req.method === 'POST') {
+    if (isRateLimited(req, 'auth_forgot', 5, 5 * 60 * 1000)) {
+      res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ error: 'RATE_LIMITED' }));
+    }
     try {
       const parsed = await readPostBody(req);
       const email = String(parsed.email || '').trim().toLowerCase();
@@ -892,10 +895,14 @@ const server = http.createServer(async (req, res) => {
         if (!optTag.startsWith('#')) optTag = `#${optTag}`;
         const scRes = await fetchFromSupercell(`/players/${encodeURIComponent(optTag)}`, customKey);
         if (scRes.status === 200 && scRes.data?.tag) {
+          const cleanCrName = scRes.data.name
+            ? sanitizeChatText(scRes.data.name, 24)
+            : null;
           crMeta = {
             tag: scRes.data.tag,
             trophies: typeof scRes.data.trophies === 'number' ? scRes.data.trophies : null,
             clanName: scRes.data.clan?.name || null,
+            ...(cleanCrName ? { username: cleanCrName, displayName: cleanCrName } : {}),
           };
         } else {
           res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
