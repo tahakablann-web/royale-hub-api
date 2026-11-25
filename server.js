@@ -107,10 +107,7 @@ const DEFAULT_NEWS_ITEMS = [
 function isUserAdmin(userObj) {
   if (!userObj) return false;
   const email = String(userObj.email || '').trim().toLowerCase();
-  return Boolean(
-    userObj.isAdmin ||
-      (email && ADMIN_EMAILS.includes(email))
-  );
+  return Boolean(email && ADMIN_EMAILS.includes(email));
 }
 
 let sqliteDb = null;
@@ -389,10 +386,10 @@ function getAuthUserFromRequest(req) {
   if (!user || !user.userId) return null;
   const users = readStore('auth_users', USERS_FILE, []);
   const record = users.find((u) => u.userId === user.userId);
-  if (record?.banned) return null;
+  if (!record || record.banned) return null;
   const hydrated = {
     ...user,
-    isAdmin: isUserAdmin(record || user),
+    isAdmin: isUserAdmin(record),
   };
   touchPresence(hydrated);
   return hydrated;
@@ -731,6 +728,10 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
         return res.end(JSON.stringify({ error: 'EMAIL_ALREADY_EXISTS' }));
       }
+      if (ADMIN_TAGS.includes(optTag) && !ADMIN_EMAILS.includes(email)) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: 'TAG_RESERVED' }));
+      }
 
       let crMeta = { tag: optTag, trophies: null, clanName: null };
       let crPlayerName = optTag;
@@ -893,6 +894,13 @@ const server = http.createServer(async (req, res) => {
 
       if (optTag) {
         if (!optTag.startsWith('#')) optTag = `#${optTag}`;
+        if (
+          ADMIN_TAGS.includes(optTag) &&
+          !ADMIN_EMAILS.includes(String(authUser.email || '').trim().toLowerCase())
+        ) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+          return res.end(JSON.stringify({ error: 'TAG_RESERVED' }));
+        }
         const scRes = await fetchFromSupercell(`/players/${encodeURIComponent(optTag)}`, customKey);
         if (scRes.status === 200 && scRes.data?.tag) {
           const cleanCrName = scRes.data.name
